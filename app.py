@@ -7,7 +7,7 @@ import requests
 from tensorflow.keras.models import load_model
 
 # 設定 Hugging Face 模型網址（換成你的連結）
-MODEL_URL = "https://huggingface.co/wuwuwu123123/deepfake/blob/main/deepfake_cnn_model.h5"
+MODEL_URL = "https://huggingface.co/wuwuwu123123/deepfake/resolve/main/deepfake_cnn_model.h5"
 
 # 嘗試下載模型到暫存資料夾
 @st.cache_resource
