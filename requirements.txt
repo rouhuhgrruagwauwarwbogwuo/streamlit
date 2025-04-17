@@ -1,6 +1,5 @@
 streamlit
-numpy
-opencv-python-headless
 tensorflow
-h5py
+opencv-python-headless
+numpy
 requests
