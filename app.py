@@ -1,78 +1,55 @@
-import os
+import streamlit as st
 import numpy as np
 import cv2
-import streamlit as st
+import os
+import tempfile
+import requests
 from tensorflow.keras.models import load_model
 from tensorflow.keras.preprocessing import image
-from tensorflow.keras.applications import ResNet50
-from tensorflow.keras.applications.resnet50 import preprocess_input
-from tensorflow.keras.layers import Dense
-from tensorflow.keras.models import Sequential
 
-# 載入模型
-resnet_base = ResNet50(weights='imagenet', include_top=False, pooling='avg', input_shape=(256, 256, 3))
-resnet_classifier = Sequential([
-    resnet_base,
-    Dense(1, activation='sigmoid')
-])
-resnet_classifier.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+# 設定 Hugging Face 模型網址（換成你的連結）
+MODEL_URL = "https://huggingface.co/wuwuwu123123/deepfake/blob/main/deepfake_cnn_model.h5"
 
-custom_model = load_model('deepfake_cnn_model.h5')
+# 嘗試下載模型到暫存資料夾
+@st.cache_resource
+def download_model():
+    model_path = os.path.join(tempfile.gettempdir(), "deepfake_cnn_model.h5")
+    if not os.path.exists(model_path):
+        response = requests.get(MODEL_URL)
+        with open(model_path, "wb") as f:
+            f.write(response.content)
+    return load_model(model_path)
 
-# 預處理函數
-def preprocess_for_models(image_path):
-    img = image.load_img(image_path, target_size=(256, 256))
-    img_array = image.img_to_array(img).astype('uint8')
+model = download_model()
 
-    # For ResNet50
-    resnet_input = preprocess_input(np.expand_dims(img_array.copy(), axis=0))
-
-    # For Custom CNN: CLAHE + Normalize
-    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+# 圖片預處理
+def preprocess_image(img):
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = cv2.resize(img, (256, 256))
+    
+    # CLAHE 灰階增強
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    equalized = clahe.apply(gray)
-    clahe_rgb = cv2.cvtColor(equalized, cv2.COLOR_GRAY2RGB)
-    custom_input = np.expand_dims(clahe_rgb / 255.0, axis=0)
-
-    return resnet_input, custom_input
-
-# 預測函數
-def predict(image_path):
-    resnet_input, custom_input = preprocess_for_models(image_path)
-
-    resnet_pred = resnet_classifier.predict(resnet_input)[0][0]
-    resnet_label = "Deepfake" if resnet_pred > 0.5 else "Real"
-
-    custom_pred = custom_model.predict(custom_input)[0][0]
-    custom_label = "Deepfake" if custom_pred > 0.5 else "Real"
-
-    return {
-        'resnet_label': resnet_label,
-        'resnet_confidence': round(resnet_pred if resnet_pred > 0.5 else 1 - resnet_pred, 4),
-        'custom_label': custom_label,
-        'custom_confidence': round(custom_pred if custom_pred > 0.5 else 1 - custom_pred, 4)
-    }
+    enhanced = clahe.apply(gray)
+    img = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2RGB)
+    
+    img = img / 255.0
+    return np.expand_dims(img, axis=0)
 
 # Streamlit UI
-st.title('Deepfake Detection')
-st.write('請上傳一張圖片來進行預測')
+st.title("🕵️ Deepfake 偵測 App")
 
-# 上傳圖片
-uploaded_file = st.file_uploader("選擇圖片", type=["jpg", "jpeg", "png"])
-
+uploaded_file = st.file_uploader("上傳一張圖片", type=["jpg", "jpeg", "png"])
 if uploaded_file is not None:
-    # 保存圖片
-    img_path = os.path.join("static", uploaded_file.name)
-    with open(img_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
+    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+    img = cv2.imdecode(file_bytes, 1)
 
-    # 顯示圖片
-    st.image(img_path, caption="上傳的圖片", use_column_width=True)
+    st.image(img, caption="你上傳的圖片", use_column_width=True)
 
-    # 進行預測
-    results = predict(img_path)
+    processed = preprocess_image(img)
+    prediction = model.predict(processed)[0][0]
+    label = "Deepfake" if prediction > 0.5 else "Real"
+    confidence = prediction if prediction > 0.5 else 1 - prediction
 
-    # 顯示預測結果
-    st.subheader("預測結果")
-    st.write(f"ResNet50 預測: {results['resnet_label']} (信心分數: {results['resnet_confidence']*100:.2f}%)")
-    st.write(f"自訂 CNN 預測: {results['custom_label']} (信心分數: {results['custom_confidence']*100:.2f}%)")
+    st.markdown(f"### 🔍 預測結果: **{label}**")
+    st.markdown(f"### 📊 信心分數: **{confidence:.2%}**")
