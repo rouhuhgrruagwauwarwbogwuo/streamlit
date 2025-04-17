@@ -3,71 +3,91 @@ import numpy as np
 import cv2
 import tempfile
 import requests
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing import image
-import streamlit as st
 import h5py
+import streamlit as st
+import matplotlib.pyplot as plt
+from tensorflow.keras.models import load_model, Sequential
+from tensorflow.keras.preprocessing import image
+from tensorflow.keras.applications import ResNet50
+from tensorflow.keras.applications.resnet50 import preprocess_input
+from tensorflow.keras.layers import Dense
 
-# 設定 Hugging Face 模型網址（換成你的連結）
+# 🔹 Hugging Face 模型下載網址
 MODEL_URL = "https://huggingface.co/wuwuwu123123/deepfake/resolve/main/deepfake_cnn_model.h5"
 
-# 嘗試下載模型到暫存資料夾
 @st.cache_resource
 def download_model():
     model_path = os.path.join(tempfile.gettempdir(), "deepfake_cnn_model.h5")
-    
-    # 檢查模型文件是否已經存在
+
     if not os.path.exists(model_path):
         response = requests.get(MODEL_URL)
         if response.status_code == 200:
             with open(model_path, "wb") as f:
                 f.write(response.content)
         else:
-            raise Exception("模型下載失敗，請檢查 URL 或網路連接。")
-    
-    # 嘗試手動加載模型文件
+            st.error("❌ 模型下載失敗，請確認 Hugging Face 模型網址是否正確。")
+            raise Exception("模型下載失敗。")
+
     try:
         with h5py.File(model_path, 'r') as f:
-            print("模型文件檢查成功")
+            pass
     except OSError as e:
-        print(f"加載模型時出錯: {e}")
+        st.error("❌ 模型檔案無法讀取，可能是損壞或格式錯誤。")
         raise
 
-    # 加載模型
-    model = load_model(model_path)
-    return model
+    return load_model(model_path)
 
-# 下載並加載模型
-model = download_model()
+# 🔹 載入模型
+try:
+    custom_model = download_model()
+except Exception:
+    st.stop()
 
-# 圖片預處理
-def preprocess_image(img):
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = cv2.resize(img, (256, 256))
-    
-    # CLAHE 灰階增強
-    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+# 🔹 ResNet50 模型建立
+resnet_model = ResNet50(weights='imagenet', include_top=False, pooling='avg', input_shape=(256, 256, 3))
+resnet_classifier = Sequential([
+    resnet_model,
+    Dense(1, activation='sigmoid')
+])
+resnet_classifier.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+
+# 🔹 預處理函數 for both models
+def preprocess_for_models(img):
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img_resized = cv2.resize(img_rgb, (256, 256))
+
+    # For ResNet50
+    resnet_input = preprocess_input(np.expand_dims(img_resized, axis=0))
+
+    # For Custom CNN (CLAHE gray enhancement)
+    gray = cv2.cvtColor(img_resized, cv2.COLOR_RGB2GRAY)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
-    img = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2RGB)
-    
-    img = img / 255.0
-    return np.expand_dims(img, axis=0)
+    clahe_rgb = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2RGB)
+    custom_input = np.expand_dims(clahe_rgb / 255.0, axis=0)
 
-# Streamlit UI
+    return resnet_input, custom_input, img_rgb
+
+# 🔹 Streamlit App
 st.title("🕵️ Deepfake 偵測 App")
 
-uploaded_file = st.file_uploader("上傳一張圖片", type=["jpg", "jpeg", "png"])
+uploaded_file = st.file_uploader("📤 上傳一張圖片", type=["jpg", "jpeg", "png"])
 if uploaded_file is not None:
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, 1)
 
-    st.image(img, caption="你上傳的圖片", use_column_width=True)
+    resnet_input, custom_input, display_img = preprocess_for_models(img)
 
-    processed = preprocess_image(img)
-    prediction = model.predict(processed)[0][0]
-    label = "Deepfake" if prediction > 0.5 else "Real"
-    confidence = prediction if prediction > 0.5 else 1 - prediction
+    # 預測
+    resnet_pred = resnet_classifier.predict(resnet_input)[0][0]
+    custom_pred = custom_model.predict(custom_input)[0][0]
 
-    st.markdown(f"### 🔍 預測結果: **{label}**")
-    st.markdown(f"### 📊 信心分數: **{confidence:.2%}**")
+    resnet_label = "Deepfake" if resnet_pred > 0.5 else "Real"
+    custom_label = "Deepfake" if custom_pred > 0.5 else "Real"
+    resnet_conf = resnet_pred if resnet_pred > 0.5 else 1 - resnet_pred
+    custom_conf = custom_pred if custom_pred > 0.5 else 1 - custom_pred
+
+    # 顯示圖片與結果
+    st.image(display_img, caption="你上傳的圖片", use_container_width=True)
+    st.markdown(f"### 🤖 ResNet50 預測: **{resnet_label}** ({resnet_conf:.2%})")
+    st.markdown(f"### 🧠 自訂 CNN 預測: **{custom_label}** ({custom_conf:.2%})")
