@@ -51,8 +51,9 @@ def main():
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
         img_bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
-        st.image(image, caption="圖片", use_container_width=True)
-
+        # 顯示圖片（改用轉成 RGB 的 img_rgb）
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        st.image(img_rgb, caption="上傳圖片", use_container_width=True)
 
         IMG_SIZE = (128, 128)
 
