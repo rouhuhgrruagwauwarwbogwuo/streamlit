@@ -41,23 +41,26 @@ def main():
         st.image(image, caption="上傳圖片", use_container_width=True)
 
         model = load_custom_cnn_model()
-
         st.write("模型輸入層 shape:", model.input_shape)
 
         preprocessed_img = preprocess_image(image, target_size=model.input_shape[1:3])
         st.write("預處理後圖片 shape:", preprocessed_img.shape)
 
         try:
-            prediction = model.predict(preprocessed_img)[0][0]
-            label = "🟢 真實 Real" if prediction < 0.5 else "🔴 假的 Deepfake"
-            confidence = prediction if prediction > 0.5 else 1 - prediction
+            prediction = model.predict(preprocessed_img)
+            st.write("模型輸出 shape:", prediction.shape)
+            prediction_val = prediction[0][0] if prediction.ndim == 2 else prediction[0]
+            label = "🟢 真實 Real" if prediction_val < 0.5 else "🔴 假的 Deepfake"
+            confidence = prediction_val if prediction_val > 0.5 else 1 - prediction_val
 
             st.markdown("---")
             st.subheader("🔍 偵測結果")
             st.markdown(f"**判斷：{label}**")
             st.progress(float(confidence), text=f"信心分數：{confidence:.2%}")
+        except ValueError as e:
+            st.error(f"模型輸入格式錯誤，請檢查輸入圖片尺寸與格式。錯誤詳情：{e}")
         except Exception as e:
-            st.error(f"預測過程發生錯誤: {e}")
+            st.error(f"發生未知錯誤：{e}")
 
 if __name__ == "__main__":
     main()
