@@ -1,66 +1,78 @@
-import streamlit as st
+import cv2
 import numpy as np
-import os
-from PIL import Image
-import requests
+from mtcnn import MTCNN
 from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing.image import img_to_array
 
-st.set_page_config(page_title="Deepfake 偵測", layout="centered")
+# 載入模型（事先訓練好的全臉模型與局部模型）
+full_face_model = load_model('full_face_model.h5')
+mouth_model = load_model('mouth_model.h5')
+eyes_model = load_model('eyes_model.h5')
 
-@st.cache_resource
-def load_custom_cnn_model():
-    model_url = "https://huggingface.co/wuwuwu123123/newmodel/resolve/main/deepfake_cnn_model.h5"
-    model_path = "deepfake_cnn_model.h5"
+detector = MTCNN()
 
-    if not os.path.exists(model_path):
-        with st.spinner("⬇️ 正在從 Hugging Face 下載自訂模型..."):
-            response = requests.get(model_url)
-            with open(model_path, "wb") as f:
-                f.write(response.content)
-            st.success("✅ 模型下載完成！")
+def extract_regions(image):
+    # MTCNN 偵測
+    results = detector.detect_faces(image)
+    if len(results) == 0:
+        return None, None, None  # 找不到臉
 
-    model = load_model(model_path)
-    return model
+    face = results[0]
+    box = face['box']  # [x, y, w, h]
+    keypoints = face['keypoints']
 
-def preprocess_image(img: Image.Image, target_size=(128, 128)):
-    img = img.convert("RGB")
-    img = img.resize(target_size)
-    img_array = img_to_array(img).astype(np.float32) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)  # (1, H, W, 3)
-    return img_array
+    x, y, w, h = box
+    # 裁切整張臉
+    face_img = image[y:y+h, x:x+w]
 
-def main():
-    st.title("🧠 Deepfake 圖像偵測系統")
-    st.markdown("上傳一張人臉圖片，我們將使用自訂 CNN 模型進行 Deepfake 分析。")
+    # 擷取嘴巴區域（根據嘴唇左右、上下擴展區域）
+    mouth_center = keypoints['mouth_left'], keypoints['mouth_right']
+    mouth_x1 = keypoints['mouth_left'][0] - 10
+    mouth_x2 = keypoints['mouth_right'][0] + 10
+    mouth_y1 = keypoints['mouth_left'][1] - 10
+    mouth_y2 = keypoints['mouth_left'][1] + 20  # 往下多一點
+    mouth_img = image[mouth_y1:mouth_y2, mouth_x1:mouth_x2]
 
-    uploaded_file = st.file_uploader("📷 上傳圖片", type=["jpg", "jpeg", "png"])
+    # 擷取眼睛區域（兩眼取中間區塊）
+    left_eye = keypoints['left_eye']
+    right_eye = keypoints['right_eye']
+    eyes_x1 = left_eye[0] - 15
+    eyes_x2 = right_eye[0] + 15
+    eyes_y1 = left_eye[1] - 15
+    eyes_y2 = left_eye[1] + 15
+    eyes_img = image[eyes_y1:eyes_y2, eyes_x1:eyes_x2]
 
-    if uploaded_file is not None:
-        image = Image.open(uploaded_file)
-        st.image(image, caption="上傳圖片", use_container_width=True)
+    return face_img, mouth_img, eyes_img
 
-        model = load_custom_cnn_model()
-        st.write("模型輸入層 shape:", model.input_shape)
+def preprocess(img, target_size=(224,224)):
+    # 轉RGB，調整大小，正規化等
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = cv2.resize(img, target_size)
+    img = img.astype('float32') / 255.0
+    img = np.expand_dims(img, axis=0)  # 增加 batch 維度
+    return img
 
-        preprocessed_img = preprocess_image(image, target_size=model.input_shape[1:3])
-        st.write("預處理後圖片 shape:", preprocessed_img.shape)
+def predict(image):
+    face_img, mouth_img, eyes_img = extract_regions(image)
+    if face_img is None:
+        return "No face detected", 0.0
 
-        try:
-            prediction = model.predict(preprocessed_img)
-            st.write("模型輸出 shape:", prediction.shape)
-            prediction_val = prediction[0][0] if prediction.ndim == 2 else prediction[0]
-            label = "🟢 真實 Real" if prediction_val < 0.5 else "🔴 假的 Deepfake"
-            confidence = prediction_val if prediction_val > 0.5 else 1 - prediction_val
+    # 分別預處理
+    face_input = preprocess(face_img)
+    mouth_input = preprocess(mouth_img)
+    eyes_input = preprocess(eyes_img)
 
-            st.markdown("---")
-            st.subheader("🔍 偵測結果")
-            st.markdown(f"**判斷：{label}**")
-            st.progress(float(confidence), text=f"信心分數：{confidence:.2%}")
-        except ValueError as e:
-            st.error(f"模型輸入格式錯誤，請檢查輸入圖片尺寸與格式。錯誤詳情：{e}")
-        except Exception as e:
-            st.error(f"發生未知錯誤：{e}")
+    # 各模型預測機率 (假設模型輸出為 [batch, 1] 之概率)
+    pred_face = full_face_model.predict(face_input)[0][0]
+    pred_mouth = mouth_model.predict(mouth_input)[0][0]
+    pred_eyes = eyes_model.predict(eyes_input)[0][0]
 
-if __name__ == "__main__":
-    main()
+    # 加權融合（你可自己調整權重）
+    final_score = 0.5 * pred_face + 0.25 * pred_mouth + 0.25 * pred_eyes
+
+    label = "Deepfake" if final_score > 0.5 else "Real"
+    return label, final_score
+
+# 測試用
+image = cv2.imread('test_image.jpg')
+label, score = predict(image)
+print(f"判斷結果：{label}，信心分數：{score:.3f}")
