@@ -8,7 +8,6 @@ from tensorflow.keras.preprocessing.image import img_to_array
 
 st.set_page_config(page_title="Deepfake 偵測", layout="centered")
 
-# ====== 模型下載與載入 ======
 @st.cache_resource
 def load_custom_cnn_model():
     model_url = "https://huggingface.co/wuwuwu123123/newmodel/resolve/main/deepfake_cnn_model.h5"
@@ -24,15 +23,13 @@ def load_custom_cnn_model():
     model = load_model(model_path)
     return model
 
-# ====== 圖片預處理 ======
 def preprocess_image(img: Image.Image, target_size=(128, 128)):
     img = img.convert("RGB")
     img = img.resize(target_size)
     img_array = img_to_array(img).astype(np.float32) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)  # 增加 batch 維度，shape 變成 (1, H, W, 3)
+    img_array = np.expand_dims(img_array, axis=0)  # (1, H, W, 3)
     return img_array
 
-# ====== 主程式 ======
 def main():
     st.title("🧠 Deepfake 圖像偵測系統")
     st.markdown("上傳一張人臉圖片，我們將使用自訂 CNN 模型進行 Deepfake 分析。")
@@ -43,26 +40,24 @@ def main():
         image = Image.open(uploaded_file)
         st.image(image, caption="上傳圖片", use_container_width=True)
 
-        # 載入模型
         model = load_custom_cnn_model()
 
-        # 顯示模型輸入層形狀
         st.write("模型輸入層 shape:", model.input_shape)
 
-        # 圖像預處理
-        preprocessed_img = preprocess_image(image)
+        preprocessed_img = preprocess_image(image, target_size=model.input_shape[1:3])
         st.write("預處理後圖片 shape:", preprocessed_img.shape)
 
-        # 預測
-        prediction = model.predict(preprocessed_img)[0][0]
+        try:
+            prediction = model.predict(preprocessed_img)[0][0]
+            label = "🟢 真實 Real" if prediction < 0.5 else "🔴 假的 Deepfake"
+            confidence = prediction if prediction > 0.5 else 1 - prediction
 
-        label = "🟢 真實 Real" if prediction < 0.5 else "🔴 假的 Deepfake"
-        confidence = prediction if prediction > 0.5 else 1 - prediction
-
-        st.markdown("---")
-        st.subheader("🔍 偵測結果")
-        st.markdown(f"**判斷：{label}**")
-        st.progress(float(confidence), text=f"信心分數：{confidence:.2%}")
+            st.markdown("---")
+            st.subheader("🔍 偵測結果")
+            st.markdown(f"**判斷：{label}**")
+            st.progress(float(confidence), text=f"信心分數：{confidence:.2%}")
+        except Exception as e:
+            st.error(f"預測過程發生錯誤: {e}")
 
 if __name__ == "__main__":
     main()
