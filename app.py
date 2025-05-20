@@ -1,7 +1,6 @@
 import streamlit as st
 import numpy as np
 import os
-import cv2
 from PIL import Image
 import requests
 from tensorflow.keras.models import load_model
@@ -30,7 +29,8 @@ def preprocess_image(img: Image.Image, target_size=(128, 128)):
     img = img.convert("RGB")
     img = img.resize(target_size)
     img_array = img_to_array(img).astype(np.float32) / 255.0
-    return np.expand_dims(img_array, axis=0)
+    img_array = np.expand_dims(img_array, axis=0)  # 增加 batch 維度，shape 變成 (1, H, W, 3)
+    return img_array
 
 # ====== 主程式 ======
 def main():
@@ -46,11 +46,16 @@ def main():
         # 載入模型
         model = load_custom_cnn_model()
 
+        # 顯示模型輸入層形狀
+        st.write("模型輸入層 shape:", model.input_shape)
+
         # 圖像預處理
         preprocessed_img = preprocess_image(image)
+        st.write("預處理後圖片 shape:", preprocessed_img.shape)
 
         # 預測
         prediction = model.predict(preprocessed_img)[0][0]
+
         label = "🟢 真實 Real" if prediction < 0.5 else "🔴 假的 Deepfake"
         confidence = prediction if prediction > 0.5 else 1 - prediction
 
