@@ -1,80 +1,117 @@
-import streamlit as st
-import numpy as np
 import os
+import cv2
+import numpy as np
+from glob import glob
 from PIL import Image
-import requests
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing.image import img_to_array
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import (Input, Conv2D, MaxPooling2D, Flatten, Dense,
+                                     Dropout, Concatenate)
+from tensorflow.keras.regularizers import l2
+from tensorflow.keras.optimizers import Adam
 
-st.set_page_config(page_title="Deepfake 偵測", layout="centered")
+# ======================== 特徵處理函數 ========================
+def resize_and_normalize(img, target_size=(128, 128)):
+    img = cv2.resize(img, target_size)
+    return img.astype(np.float32) / 255.0
 
-@st.cache_resource
-def load_custom_cnn_model():
-    model_url = "https://huggingface.co/wuwuwu123123/newmodel/resolve/main/deepfake_cnn_model.h5"
-    model_path = "deepfake_cnn_model.h5"
+def apply_clahe(img):
+    lab = cv2.cvtColor(img, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    cl = clahe.apply(l)
+    merged = cv2.merge((cl, a, b))
+    return cv2.cvtColor(merged, cv2.COLOR_LAB2RGB)
 
-    if not os.path.exists(model_path):
-        with st.spinner("⬇️ 正在從 Hugging Face 下載自訂模型..."):
-            response = requests.get(model_url)
-            with open(model_path, "wb") as f:
-                f.write(response.content)
-            st.success("✅ 模型下載完成！")
+def apply_fft(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    f = np.fft.fft2(gray)
+    fshift = np.fft.fftshift(f)
+    magnitude_spectrum = 20 * np.log(np.abs(fshift) + 1e-8)
+    magnitude_spectrum = cv2.normalize(magnitude_spectrum, None, 0, 255, cv2.NORM_MINMAX)
+    return magnitude_spectrum.astype(np.uint8)
 
-    model = load_model(model_path)
+def apply_edge(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    edge = cv2.Sobel(gray, cv2.CV_64F, 1, 1, ksize=3)
+    edge = cv2.convertScaleAbs(edge)
+    return edge
+
+# ======================== 模型架構 ========================
+def conv_branch(input_tensor, l2_reg=1e-4):
+    x = Conv2D(32, (3, 3), activation='relu', padding='same', kernel_regularizer=l2(l2_reg))(input_tensor)
+    x = MaxPooling2D((2, 2))(x)
+    x = Conv2D(64, (3, 3), activation='relu', padding='same', kernel_regularizer=l2(l2_reg))(x)
+    x = MaxPooling2D((2, 2))(x)
+    x = Conv2D(128, (3, 3), activation='relu', padding='same', kernel_regularizer=l2(l2_reg))(x)
+    x = MaxPooling2D((2, 2))(x)
+    x = Flatten()(x)
+    return x
+
+def build_fusion_model(input_shape=(128, 128, 3)):
+    rgb_input = Input(shape=input_shape, name='rgb_input')
+    clahe_input = Input(shape=input_shape, name='clahe_input')
+    fft_input = Input(shape=(128, 128, 1), name='fft_input')
+    edge_input = Input(shape=(128, 128, 1), name='edge_input')
+
+    rgb_branch = conv_branch(rgb_input)
+    clahe_branch = conv_branch(clahe_input)
+    fft_branch = conv_branch(fft_input)
+    edge_branch = conv_branch(edge_input)
+
+    merged = Concatenate()([rgb_branch, clahe_branch, fft_branch, edge_branch])
+    x = Dense(256, activation='relu')(merged)
+    x = Dropout(0.5)(x)
+    x = Dense(64, activation='relu')(x)
+    x = Dropout(0.5)(x)
+    output = Dense(1, activation='sigmoid')(x)
+
+    model = Model(inputs=[rgb_input, clahe_input, fft_input, edge_input], outputs=output)
+    model.compile(optimizer=Adam(1e-4), loss='binary_crossentropy', metrics=['accuracy'])
     return model
 
-def preprocess_image(img: Image.Image, target_size=(128, 128)):
-    img = img.convert("RGB")
-    img = img.resize(target_size)
-    img_array = img_to_array(img).astype(np.float32) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)  # (1, H, W, 3)
-    return img_array
+# ======================== 資料載入 ========================
+def load_dataset(data_dir):
+    X_rgb, X_clahe, X_fft, X_edge, y = [], [], [], [], []
+    for label_dir, label in [('real', 0), ('fake', 1)]:
+        for img_path in glob(os.path.join(data_dir, label_dir, '*')):
+            img = Image.open(img_path).convert('RGB')
+            img_np = np.array(img)
 
-def main():
-    st.title("🧠 Deepfake 圖像偵測系統")
-    st.markdown("上傳一張人臉圖片，我們將使用自訂 CNN 模型進行 Deepfake 分析。")
+            rgb = resize_and_normalize(img_np)
+            clahe = resize_and_normalize(apply_clahe(img_np))
+            fft = resize_and_normalize(apply_fft(img_np))
+            edge = resize_and_normalize(apply_edge(img_np))
 
-    uploaded_file = st.file_uploader("📷 上傳圖片", type=["jpg", "jpeg", "png"])
+            X_rgb.append(rgb)
+            X_clahe.append(clahe)
+            X_fft.append(np.expand_dims(fft, -1))
+            X_edge.append(np.expand_dims(edge, -1))
+            y.append(label)
 
-    if uploaded_file is not None:
-        image = Image.open(uploaded_file)
-        st.image(image, caption="上傳圖片", use_container_width=True)
+    return np.array(X_rgb), np.array(X_clahe), np.array(X_fft), np.array(X_edge), np.array(y)
 
-        model = load_custom_cnn_model()
-        st.write("模型輸入層 shape:", model.input_shape)
+# ======================== 主流程 ========================
+if __name__ == '__main__':
+    data_dir = 'data'  # 檔案結構需為 data/real/*.jpg, data/fake/*.jpg
+    X_rgb, X_clahe, X_fft, X_edge, y = load_dataset(data_dir)
 
-        preprocessed_img = preprocess_image(image, target_size=model.input_shape[1:3])
-        st.write("預處理後圖片 shape:", preprocessed_img.shape)
+    X_train = [X_rgb, X_clahe, X_fft, X_edge]
+    X_tr, X_val, y_tr, y_val = train_test_split(X_train, y, test_size=0.2, random_state=42)
 
-        try:
-            prediction = model.predict(preprocessed_img)
-            st.write("模型輸出 shape:", prediction.shape)
+    model = build_fusion_model()
 
-            prediction_val = prediction[0][0] if prediction.ndim == 2 else prediction[0]
+    early_stop = EarlyStopping(patience=7, restore_best_weights=True)
+    lr_reduce = ReduceLROnPlateau(factor=0.1, patience=5)
 
-            # 🔍 動態閾值 + 模糊區間判斷
-            if prediction_val >= 0.55:
-                label = "🔴 判定為 Deepfake"
-                confidence = prediction_val
-                bar_color = "red"
-            elif prediction_val <= 0.45:
-                label = "🟢 判定為 Real"
-                confidence = 1 - prediction_val
-                bar_color = "green"
-            else:
-                label = "🟡 難以判斷（模糊區間）"
-                confidence = 1 - abs(prediction_val - 0.5)
-                bar_color = "orange"
+    model.fit(
+        [X_tr[0], X_tr[1], X_tr[2], X_tr[3]], y_tr,
+        validation_data=([X_val[0], X_val[1], X_val[2], X_val[3]], y_val),
+        epochs=30,
+        batch_size=32,
+        callbacks=[early_stop, lr_reduce]
+    )
 
-            st.markdown("---")
-            st.subheader("🔍 偵測結果")
-            st.markdown(f"**結果：{label}**")
-            st.progress(float(confidence), text=f"信心分數：{confidence:.2%}")
-
-        except ValueError as e:
-            st.error(f"模型輸入格式錯誤，請檢查輸入圖片尺寸與格式。錯誤詳情：{e}")
-        except Exception as e:
-            st.error(f"發生未知錯誤：{e}")
-
-if __name__ == "__main__":
-    main()
+    model.save('deepfake_fusion_model.h5')
