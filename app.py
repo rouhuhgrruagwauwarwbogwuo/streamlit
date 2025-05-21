@@ -20,11 +20,7 @@ def load_custom_cnn_model():
                 f.write(response.content)
             st.success("✅ 模型下載完成！")
 
-    try:
-        model = load_model(model_path)
-    except Exception as e:
-        st.error(f"模型載入失敗: {e}")
-        model = None
+    model = load_model(model_path)
     return model
 
 def preprocess_image(img: Image.Image, target_size=(128, 128)):
@@ -45,9 +41,6 @@ def main():
         st.image(image, caption="上傳圖片", use_container_width=True)
 
         model = load_custom_cnn_model()
-        if model is None:
-            st.stop()
-
         st.write("模型輸入層 shape:", model.input_shape)
 
         preprocessed_img = preprocess_image(image, target_size=model.input_shape[1:3])
@@ -56,15 +49,28 @@ def main():
         try:
             prediction = model.predict(preprocessed_img)
             st.write("模型輸出 shape:", prediction.shape)
+
             prediction_val = prediction[0][0] if prediction.ndim == 2 else prediction[0]
-            label = "🔴 假的 Deepfake" if prediction_val > 0.5 else "🟢 真實 Real"
-            confidence = prediction_val if prediction_val > 0.5 else 1 - prediction_val
+
+            # 🔍 動態閾值 + 模糊區間判斷
+            if prediction_val >= 0.55:
+                label = "🔴 判定為 Deepfake"
+                confidence = prediction_val
+                bar_color = "red"
+            elif prediction_val <= 0.45:
+                label = "🟢 判定為 Real"
+                confidence = 1 - prediction_val
+                bar_color = "green"
+            else:
+                label = "🟡 難以判斷（模糊區間）"
+                confidence = 1 - abs(prediction_val - 0.5)
+                bar_color = "orange"
 
             st.markdown("---")
             st.subheader("🔍 偵測結果")
-            st.markdown(f"**判斷：{label}**")
-            st.progress(float(confidence))
-            st.write(f"信心分數：{confidence:.2%}")
+            st.markdown(f"**結果：{label}**")
+            st.progress(float(confidence), text=f"信心分數：{confidence:.2%}")
+
         except ValueError as e:
             st.error(f"模型輸入格式錯誤，請檢查輸入圖片尺寸與格式。錯誤詳情：{e}")
         except Exception as e:
