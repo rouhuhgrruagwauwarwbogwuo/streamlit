@@ -77,19 +77,23 @@ def load_dataset(data_dir):
     X_rgb, X_clahe, X_fft, X_edge, y = [], [], [], [], []
     for label_dir, label in [('real', 0), ('fake', 1)]:
         for img_path in glob(os.path.join(data_dir, label_dir, '*')):
-            img = Image.open(img_path).convert('RGB')
-            img_np = np.array(img)
+            try:
+                img = Image.open(img_path).convert('RGB')
+                img_np = np.array(img)
 
-            rgb = resize_and_normalize(img_np)
-            clahe = resize_and_normalize(apply_clahe(img_np))
-            fft = resize_and_normalize(apply_fft(img_np))
-            edge = resize_and_normalize(apply_edge(img_np))
+                rgb = resize_and_normalize(img_np)
+                clahe = resize_and_normalize(apply_clahe(img_np))
+                fft = resize_and_normalize(apply_fft(img_np))
+                edge = resize_and_normalize(apply_edge(img_np))
 
-            X_rgb.append(rgb)
-            X_clahe.append(clahe)
-            X_fft.append(np.expand_dims(fft, -1))
-            X_edge.append(np.expand_dims(edge, -1))
-            y.append(label)
+                X_rgb.append(rgb)
+                X_clahe.append(clahe)
+                X_fft.append(np.expand_dims(fft, -1))
+                X_edge.append(np.expand_dims(edge, -1))
+                y.append(label)
+            except Exception as e:
+                print(f"Error processing {img_path}: {e}")
+                continue
 
     return np.array(X_rgb), np.array(X_clahe), np.array(X_fft), np.array(X_edge), np.array(y)
 
@@ -98,8 +102,14 @@ if __name__ == '__main__':
     data_dir = 'data'  # 檔案結構需為 data/real/*.jpg, data/fake/*.jpg
     X_rgb, X_clahe, X_fft, X_edge, y = load_dataset(data_dir)
 
-    X_train = [X_rgb, X_clahe, X_fft, X_edge]
-    X_tr, X_val, y_tr, y_val = train_test_split(X_train, y, test_size=0.2, random_state=42)
+    # 使用一個分支的 index 做 train/test split
+    indices = np.arange(len(y))
+    train_idx, val_idx = train_test_split(indices, test_size=0.2, random_state=42, stratify=y)
+
+    X_tr = [X_rgb[train_idx], X_clahe[train_idx], X_fft[train_idx], X_edge[train_idx]]
+    X_val = [X_rgb[val_idx], X_clahe[val_idx], X_fft[val_idx], X_edge[val_idx]]
+    y_tr = y[train_idx]
+    y_val = y[val_idx]
 
     model = build_fusion_model()
 
@@ -107,8 +117,8 @@ if __name__ == '__main__':
     lr_reduce = ReduceLROnPlateau(factor=0.1, patience=5)
 
     model.fit(
-        [X_tr[0], X_tr[1], X_tr[2], X_tr[3]], y_tr,
-        validation_data=([X_val[0], X_val[1], X_val[2], X_val[3]], y_val),
+        X_tr, y_tr,
+        validation_data=(X_val, y_val),
         epochs=30,
         batch_size=32,
         callbacks=[early_stop, lr_reduce]
