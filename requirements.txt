@@ -5,4 +5,4 @@ numpy
 Pillow
 requests
 mtcnn
-sklearn
+scikit-learn
